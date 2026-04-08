@@ -1,9 +1,2 @@
-fastapi
-uvicorn[standard]
-celery
-redis
-requests
-pydantic[email]
-pwdlib
-pyjwt
-kombu
+boto3
+psycopg2-binary
