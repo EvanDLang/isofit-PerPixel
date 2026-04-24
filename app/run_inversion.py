@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 import numpy as np
+import ray
 
 from isofit.core.forward import ForwardModel
 from isofit.core.fileio import IO
@@ -56,6 +57,11 @@ def oe_inversion(config, fm,
         return x
 
 
+@ray.remote
+def ray_oe_inversion(config, fm, rdn_data, loc_data, obs_data):
+    return oe_inversion(config, fm, rdn_data, loc_data, obs_data)
+
+
 def parse_date(sensor, gid):
     dt, _ = tmpl.sensor_name_to_dt(
         sensor,
@@ -85,6 +91,7 @@ def main(
     sensor: InversionData,
     gid: InversionData,
     rundir: str,
+    n_cores: int = 1,
     delete_all_files: bool = True,
     task_id: str = None,
     inp_batch_keys: list = ['sensor', 'dt'],
@@ -190,6 +197,7 @@ def main(
             utc_time=agg(batch_utc_time),
             wl=np.array(wl[most_common_sensor]),
             fwhm=np.array(fwhm[most_common_sensor]),
+            n_cores=n_cores,
         )
 
         # Assemble expected ISOFIT input format
@@ -236,22 +244,21 @@ def main(
         logging.debug(dict_str)
 
         presolve_config = Config(presolve_config)
+        logging.info(f"isofit presolve n_cores: {presolve_config.implementation.n_cores}")
 
         # Instantiate FM (will build lut). Have to rely on isofit ray?
+        logging.info(f"Building presolve LUT")
         fm = ForwardModel(presolve_config)
         statevec = fm.statevec
 
-        # Build ray parallelization into this loop
-        batch_results = np.zeros((batch_rdn_data.shape[0], len(statevec)))
+        # Parallelize pixel loop via Ray shared memory
         print("Running presolve")
-        for i in range(len(batch_rdn_data)):
-            batch_results[i, :] = oe_inversion(
-                presolve_config,
-                fm,
-                batch_rdn_data[i],
-                batch_loc_data[i],
-                batch_obs_data[i]
-            )
+        fm_ref = ray.put(fm)
+        futures = [
+            ray_oe_inversion.remote(presolve_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            for i in range(len(batch_rdn_data))
+        ]
+        batch_results = np.array(ray.get(futures))
 
         # Handle the presolve results
         h2o_idx = [i for i, val in enumerate(statevec) if val == 'H2OSTR'][0]
@@ -287,19 +294,18 @@ def main(
         logging.debug(dict_str)
 
         main_config = Config(main_config)
+        logging.info(f"isofit main solve n_cores: {main_config.implementation.n_cores}")
+        logging.info(f"Building main solve LUT — n_cores={n_cores}")
         fm = ForwardModel(main_config)
         statevec = fm.statevec
 
         print("Running main solve")
-        batch_results = np.zeros((batch_rdn_data.shape[0], len(statevec)))
-        for i in range(len(batch_rdn_data)):
-            batch_results[i, :] = oe_inversion(
-                main_config,
-                fm,
-                batch_rdn_data[i],
-                batch_loc_data[i],
-                batch_obs_data[i]
-            )
+        fm_ref = ray.put(fm)
+        futures = [
+            ray_oe_inversion.remote(main_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            for i in range(len(batch_rdn_data))
+        ]
+        batch_results = np.array(ray.get(futures))
 
         results[batch] = batch_results
         state_names[batch] = statevec
@@ -316,6 +322,7 @@ def main(
             output[i] = (state_names[key], list(res))
 
     end_time = time.time()
+    logging.info(f"Batch completed in {round(end_time - start_time, 2)} seconds")
 
     return {
         'statevec': list(output.statevec),

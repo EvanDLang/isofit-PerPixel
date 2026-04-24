@@ -25,6 +25,7 @@ def run_inversion(
     sensor_name: str,
     rundir: str,
     job_id: str,
+    n_cores: int = 1,
 ) -> dict:
     try:
         isofit_sensor = SENSOR_KEY_MAP.get(sensor_name)
@@ -73,6 +74,7 @@ def run_inversion(
             gid=            InversionData([p["granule_id"] for p in pixels]),
             rundir=rundir,
             task_id=job_id,
+            n_cores=n_cores,
             delete_all_files=True,
         )
 

@@ -1,4 +1,5 @@
 import json
+import logging
 from os.path import split
 import os
 from pathlib import Path
@@ -44,7 +45,7 @@ class InputConfig:
         surface_category="multicomponent_surface",
         terrain_style: str = "flat",
         cos_i_min: float = 0.3,
-        n_cores: int = 1,
+        n_cores: int = 1
     ):
         """
         Generic config class to make config.

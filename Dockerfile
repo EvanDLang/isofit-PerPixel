@@ -41,6 +41,3 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-
-# # Sync latest app code from S3 before running — avoids Docker rebuild for code changes
-# CMD ["bash", "-c", "aws s3 sync s3://vswir-plants-config/isofit-app/ /root/app/ --region us-west-2 && python3 /root/app/entrypoint.py"]
