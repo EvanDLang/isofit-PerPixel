@@ -72,13 +72,13 @@ def fetch_sensor_metadata(campaign_name: str, sensor_name: str) -> tuple[dict, d
     return {sensor_name: row["wavelength_center"]}, {sensor_name: row["fwhm"]}
 
 
-def fetch_completed_pixel_ids(pixel_ids: list) -> set:
+def fetch_completed_pixel_ids(pixel_ids: list, job_id: str) -> set:
     """Used on retry to skip pixels already saved in a prior attempt."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pixel_id FROM vswir_plants.reflectance_view WHERE pixel_id = ANY(%s)",
-                (pixel_ids,)
+                "SELECT pixel_id FROM vswir_plants_staging.output_pixel_rfl WHERE pixel_id = ANY(%s) AND job_id = %s",
+                (pixel_ids, job_id)
             )
             return {row[0] for row in cur.fetchall()}
 
@@ -87,7 +87,7 @@ def save_results(job_id: str, pixel_ids: list, result: dict):
     # result is {"status": "success", "result": {"statevec": ..., "solution": ..., "runtime_seconds": ...}}
     inner = result.get("result", result)
     rows = [
-        (pixel_id, [float(v) for v in inner["solution"][i][:-2]])
+        (pixel_id, job_id, [float(v) for v in inner["solution"][i][:-2]])
         for i, pixel_id in enumerate(pixel_ids)
     ]
     with get_connection() as conn:
@@ -96,9 +96,9 @@ def save_results(job_id: str, pixel_ids: list, result: dict):
             psycopg2.extras.execute_values(
                 cur,
                 """
-                INSERT INTO vswir_plants.output_pixel_rfl (pixel_id, reflectance)
+                INSERT INTO vswir_plants_staging.output_pixel_rfl (pixel_id, job_id, reflectance)
                 VALUES %s
-                ON CONFLICT (pixel_id) DO UPDATE
+                ON CONFLICT (pixel_id, job_id) DO UPDATE
                     SET reflectance = EXCLUDED.reflectance
                 """,
                 rows
