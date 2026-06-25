@@ -36,9 +36,10 @@ class InversionData:
 
 
 class OutputData:
-    def __init__(self, statevec, solution):
+    def __init__(self, statevec, solution, uncertainty):
         self.statevec = statevec
         self.solution = solution
+        self.uncertainty = uncertainty 
 
     def __iter__(self):
         return iter(self.solution)
@@ -54,15 +55,18 @@ class OutputData:
             return {
                 "statevec": InversionData([self.statevec[i] for i in index]),
                 "solution": InversionData([self.solution[i] for i in index]),
+                "uncertainty": InversionData([self.uncertainty[i] for i in index]),
             }
         return {
             "statevec": self.statevec[index],
             "solution": self.solution[index],
+            "uncertainty": self.uncertainty[index],
         }
 
     def __setitem__(self, index, value):
         self.statevec[index] = value[0]
         self.solution[index] = value[1]
+        self.uncertainty[index] = value[2]
 
 
 def enforce_annotations(func):

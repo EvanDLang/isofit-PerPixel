@@ -9,13 +9,11 @@ RUN apt-get update && \
         git && \
     rm -rf /var/lib/apt/lists/*
 
-# install isofit from source on the specific branch
+# install isofit from source from dev
 WORKDIR /root
-RUN git clone https://github.com/evan-greenbrg/isofit.git
+RUN git clone --branch v4.0.0-beta https://github.com/isofit/isofit.git
 
 WORKDIR /root/isofit
-RUN git checkout utils/make_config && \
-    git pull origin utils/make_config
 
 WORKDIR /root
 

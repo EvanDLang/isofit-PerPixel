@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import ray
 
+from isofit.core.common import load_esd
 from isofit.core.forward import ForwardModel
 from isofit.core.fileio import IO
 from isofit.core.geometry import Geometry
@@ -43,18 +44,21 @@ def oe_inversion(config, fm,
         10 - UTC time
     """
 
-    x = Inversion(config, fm).invert(
-        rdn_data,
-        Geometry(
-            loc=loc_data,
-            obs=obs_data,
-            esd=IO.load_esd()
-        )
+
+    geom = Geometry(
+        loc=loc_data,
+        obs=obs_data,
+        esd=load_esd()
     )
+    iv = Inversion(config, fm)
+    x = iv.invert(rdn_data, geom)
+    S_hat, K, G = iv.calc_posterior(x[-1], geom, rdn_data)
+    posterior_uncertainty = np.sqrt(np.diag(S_hat))
+
     if only_converged:
-        return x[-1, :]
+        return x[-1, :], posterior_uncertainty
     else:
-        return x
+        return x, posterior_uncertainty
 
 
 @ray.remote
@@ -94,7 +98,7 @@ def main(
     n_cores: int = 1,
     delete_all_files: bool = True,
     task_id: str = None,
-    inp_batch_keys: list = ['sensor', 'dt'],
+    inp_batch_keys: list = ['gid'],
     h2o_min: float = 0.2,
     h2o_max: float = 6.0
 ):
@@ -156,8 +160,9 @@ def main(
         batches = {tuple(['all']): [i for i in range(len(gid))]}
 
     # Iterate over batches
-    results = {}
     state_names = {}
+    states = {}
+    uncertainties = {}
     for batch, indexes in batches.items():
         batch_rundir = rundir / '_'.join(batch)
         # Batch input data
@@ -259,10 +264,12 @@ def main(
             for i in range(len(batch_rdn_data))
         ]
         batch_results = np.array(ray.get(futures))
+        batch_state = batch_results[:, 0, :]
+        batch_unc = batch_results[:, 1, :]
 
         # Handle the presolve results
         h2o_idx = [i for i, val in enumerate(statevec) if val == 'H2OSTR'][0]
-        h2o_est = batch_results[:, h2o_idx]
+        h2o_est = batch_state[:, h2o_idx]
         p05 = np.percentile(h2o_est[h2o_est > h2o_min], 2)
         p95 = np.percentile(h2o_est[h2o_est > h2o_min], 98)
 
@@ -302,24 +309,35 @@ def main(
         print("Running main solve")
         fm_ref = ray.put(fm)
         futures = [
-            ray_oe_inversion.remote(main_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            ray_oe_inversion.remote(
+                main_config, 
+                fm_ref,
+                batch_rdn_data[i],
+                batch_loc_data[i],
+                batch_obs_data[i]
+            )
             for i in range(len(batch_rdn_data))
         ]
+        results = ray.get(futures)
         batch_results = np.array(ray.get(futures))
+        batch_state = batch_results[:, 0, :]
+        batch_unc = batch_results[:, 1, :]
 
-        results[batch] = batch_results
         state_names[batch] = statevec
+        states[batch] = batch_state
+        uncertainties[batch] = batch_unc
 
         if delete_all_files:
             shutil.rmtree(input_config.rundir)
 
     output = OutputData(
         InversionData([[] for i in range(len(rdn_data))]),
+        InversionData([[] for i in range(len(rdn_data))]),
         InversionData([[] for i in range(len(rdn_data))])
     )
     for key, idx in batches.items():
-        for res, i in zip(results[key], idx):
-            output[i] = (state_names[key], list(res))
+        for k, i in zip(key, idx):
+            output[i] = (state_names[k], list(states[k]), uncertainties[k])
 
     end_time = time.time()
     logging.info(f"Batch completed in {round(end_time - start_time, 2)} seconds")
@@ -327,5 +345,6 @@ def main(
     return {
         'statevec': list(output.statevec),
         'solution': list(output.solution),
+        'uncertainty': list(output.uncertainty),
         'runtime_seconds': round(end_time - start_time, 2)
     }
