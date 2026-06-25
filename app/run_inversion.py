@@ -336,8 +336,12 @@ def main(
         InversionData([[] for i in range(len(rdn_data))])
     )
     for key, idx in batches.items():
-        for k, i in zip(key, idx):
-            output[i] = (state_names[k], list(states[k]), uncertainties[k])
+        for state, unc, i in zip(states[key], uncertainties[key], idx):
+            output[i] = (
+                state_names[key],
+                [float(s) for s in state],
+                [float(v) for v in unc],
+            )
 
     end_time = time.time()
     logging.info(f"Batch completed in {round(end_time - start_time, 2)} seconds")
