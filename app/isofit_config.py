@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import logging
 from os.path import split
@@ -10,7 +11,8 @@ from isofit.core import units
 from isofit.data import env
 import isofit.utils.template_construction as tmpl
 from isofit.utils.surface_model import surface_model
-from isofit.atmosphere.engines.modtran import ModtranRT
+# from isofit.atmosphere.engines.modtran import ModtranRT
+# from isofit.core.forward import modtran_water_upperbound_polynomials, modtran_aot_lowerbound_polynomials
 
 from models import enforce_annotations
 
@@ -50,9 +52,10 @@ class LUTConfig:
 
         # Set defaults, will override based on settings
         # Units of g / m2
-        modtran_max_water = ModtranRT.modtran_water_upperbound_polynomials()[
-            atmosphere_type
-        ](0)
+        # modtran_max_water = modtran_water_upperbound_polynomials()[
+        #     atmosphere_type
+        # ](0)
+        modtran_max_water = 6
         self.h2o_range = [0.2, modtran_max_water]
 
         # Units of degrees
@@ -80,9 +83,10 @@ class LUTConfig:
         self.aerosol_2_spacing_min = 0
 
         # Units of AOD
-        modtran_min_aerosol = ModtranRT.modtran_aot_lowerbound_polynomials()[
-            atmosphere_type
-        ](0)
+        # modtran_min_aerosol = modtran_aot_lowerbound_polynomials()[
+        #     atmosphere_type
+        # ](0)
+        modtran_min_aerosol = 0.05
         self.aerosol_0_range = [modtran_min_aerosol, 1]
         self.aerosol_1_range = [modtran_min_aerosol, 1]
         self.aerosol_2_range = [modtran_min_aerosol, 1]
@@ -305,7 +309,6 @@ class InputConfig:
         self.inversion_windows = INVERSION_WINDOWS
 
         # Noise files not hooked up yet
-        self.input_channelized_uncertainty_path = None
         self.channelized_uncertainty_working_path = None
         self.eof_path = None
         self.eof_working_path = None
@@ -405,12 +408,14 @@ class InputConfig:
         )
 
     def wavelengths(self):
+        wl = self.wl
+        fwhm = self.fwhm
+        if wl[0] > 100:
+            wl = units.nm_to_micron(wl)
+            fwhm = units.nm_to_micron(fwhm)
         np.savetxt(
             self.wavelength_path,
-            np.array([
-                units.nm_to_micron(self.wl),
-                units.nm_to_micron(self.fwhm)
-            ]).T
+            np.array([wl, fwhm]).T
         )
         return self.wavelength_path
 
@@ -435,6 +440,7 @@ class InputConfig:
         presolve: bool = True,
         pressure_elevation: bool = False,
         retrieve_co2: bool = False,
+        channelized_noise_file: str = ''
     ):
         # Metadata from loc
         elevation_km = max(
@@ -460,7 +466,7 @@ class InputConfig:
         )
 
         # Date stuff
-        dt, sensor_inversion_windows = tmpl.sensor_name_to_dt(
+        dt, sensor_inversion_windows = sensor_name_to_dt(
             self.sensor,
             self.fid
         )
@@ -507,8 +513,8 @@ class InputConfig:
         )
         instrument_config = tmpl.make_instrument_config(
             self.wavelength_path,
-            self.input_channelized_uncertainty_path,
-            self.channelized_uncertainty_working_path,
+            channelized_noise_file,
+            channelized_noise_file,
             self.eof_path,
             self.eof_working_path,
             self.noise_path,
@@ -614,10 +620,29 @@ class InputConfig:
         }
 
 
+def sensor_name_to_dt(sensor: str, fid: str):
+    inversion_window_update = None
+    sensor = sensor.lower()
+    fid = fid.lower()
+    if sensor == "aviris_ng":
+        # parse flightline ID (AVIRIS-NG assumptions)
+        dt = datetime.strptime(fid[3:], "%Y%m%dt%H%M%S")
+    elif sensor == "neon ais 1":
+        # parse flightline ID (NEON assumptions)
+        dt = datetime.strptime(fid, "NIS01_%Y%m%d_%H%M%S")
+    else:
+        raise ValueError(
+            "Datetime object could not be obtained. Please check file name of input"
+            " data."
+        )
+    return dt, inversion_window_update
+
+
 @enforce_annotations
 def FID(sensor: str):
     calls = {
         'ang': lambda path: split(path)[-1][:18],
+        'aviris_ng': lambda path: split(path)[-1][:18],
         'av3': lambda path: split(path)[-1][:18],
         'av5': lambda path: split(path)[-1][:18],
         'avcl': lambda path: split(path)[-1][:16],
@@ -625,6 +650,7 @@ def FID(sensor: str):
         'enmap': lambda path: split(path)[-1].split("_")[5],
         'hyp': lambda path: split(path)[-1][:22],
         'neon': lambda path: split(path)[-1][:21],
+        'neon ais 1': lambda path: split(path)[-1][:21],
         'prism': lambda path: split(path)[-1][:18],
         'prisma': lambda path: path.split("/")[-1].split("_")[1],
         'gao': lambda path: split(path)[-1][:23],

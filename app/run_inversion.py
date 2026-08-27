@@ -48,7 +48,6 @@ def oe_inversion(config, fm,
     geom = Geometry(
         loc=loc_data,
         obs=obs_data,
-        esd=load_esd()
     )
     iv = Inversion(config, fm)
     x = iv.invert(rdn_data, geom)
@@ -90,6 +89,8 @@ def main(
     aspect: InversionData,
     cos_i: InversionData,
     utc_time: InversionData,
+    channelized_noise: InversionData,
+    rdn_factors: InversionData,
     wl: dict,
     fwhm: dict,
     sensor: InversionData,
@@ -182,6 +183,7 @@ def main(
         batch_utc_time = utc_time[indexes].array()
         batch_sensor = sensor[indexes]
         batch_gid = gid[indexes]
+        batch_channelized_noise = channelized_noise[indexes]
 
         # Make the LUT config for the entire batch:
         # Sensor and gid: use most common
@@ -189,6 +191,7 @@ def main(
         agg = np.mean
         most_common_sensor = Counter(batch_sensor).most_common(1)[0][0]
         most_common_gid = Counter(batch_gid).most_common(1)[0][0]
+        channelized_noise_file = batch_channelized_noise[0]
         input_config = InputConfig(
             rundir=batch_rundir,
             sensor=most_common_sensor,
@@ -243,7 +246,8 @@ def main(
             h2o_max=h2o_max,
             h2o_spacing=0.64,
             presolve=True,
-            retrieve_co2=False
+            retrieve_co2=False,
+            channelized_noise_file=batch_channelized_noise[i]
         )
         dict_str = pprint.pformat(presolve_config, indent=1)
         logging.debug(dict_str)
@@ -295,7 +299,8 @@ def main(
             aerosol_min=0.,
             aerosol_max=0.5,
             presolve=False,
-            retrieve_co2=False
+            retrieve_co2=False,
+            channelized_noise_file=channelized_noise[i]
         )
         dict_str = pprint.pformat(main_config, indent=1)
         logging.debug(dict_str)
