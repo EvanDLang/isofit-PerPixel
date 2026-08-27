@@ -205,6 +205,7 @@ class InputConfig:
         sixs_path: str = None,
         modtran_path: str = None,
         emulator_base: str = None,
+        channelized_uncertainty_file: str = '',
         ray_temp_dir: str = '/tmp/ray',
         ray_address: str = None,
         atmosphere_type="ATM_MIDLAT_SUMMER",
@@ -307,9 +308,9 @@ class InputConfig:
         self.atmosphere_type = atmosphere_type
         self.surface_category = surface_category
         self.inversion_windows = INVERSION_WINDOWS
+        self.channelized_uncertainty_file = channelized_uncertainty_file
 
-        # Noise files not hooked up yet
-        self.channelized_uncertainty_working_path = None
+        # Files not hooked up yet
         self.eof_path = None
         self.eof_working_path = None
         self.noise_path = None
@@ -440,7 +441,6 @@ class InputConfig:
         presolve: bool = True,
         pressure_elevation: bool = False,
         retrieve_co2: bool = False,
-        channelized_noise_file: str = ''
     ):
         # Metadata from loc
         elevation_km = max(
@@ -513,8 +513,8 @@ class InputConfig:
         )
         instrument_config = tmpl.make_instrument_config(
             self.wavelength_path,
-            channelized_noise_file,
-            channelized_noise_file,
+            self.channelized_uncertainty_file,
+            self.channelized_uncertainty_file,
             self.eof_path,
             self.eof_working_path,
             self.noise_path,

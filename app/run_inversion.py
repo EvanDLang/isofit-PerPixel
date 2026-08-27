@@ -89,8 +89,8 @@ def main(
     aspect: InversionData,
     cos_i: InversionData,
     utc_time: InversionData,
-    channelized_noise: InversionData,
-    rdn_factors: InversionData,
+    channelized_noise_paths: InversionData,
+    rdn_factors_paths: InversionData,
     wl: dict,
     fwhm: dict,
     sensor: InversionData,
@@ -183,7 +183,8 @@ def main(
         batch_utc_time = utc_time[indexes].array()
         batch_sensor = sensor[indexes]
         batch_gid = gid[indexes]
-        batch_channelized_noise = channelized_noise[indexes]
+        batch_channelized_noise = channelized_noise_paths[indexes]
+        batch_rdn_factors = rdn_factors_paths[indexes]
 
         # Make the LUT config for the entire batch:
         # Sensor and gid: use most common
@@ -191,7 +192,10 @@ def main(
         agg = np.mean
         most_common_sensor = Counter(batch_sensor).most_common(1)[0][0]
         most_common_gid = Counter(batch_gid).most_common(1)[0][0]
-        channelized_noise_file = batch_channelized_noise[0]
+        most_common_channelized_noise = Counter(batch_channelized_noise).most_common(1)[0][0]
+        batch_wl = np.array(wl[most_common_sensor])
+        batch_fwhm = np.array(fwhm[most_common_sensor])
+
         input_config = InputConfig(
             rundir=batch_rundir,
             sensor=most_common_sensor,
@@ -203,9 +207,10 @@ def main(
             sun_azimuth_data=agg(batch_sun_azimuth),
             path_length=agg(batch_path_length),
             utc_time=agg(batch_utc_time),
-            wl=np.array(wl[most_common_sensor]),
-            fwhm=np.array(fwhm[most_common_sensor]),
+            wl=batch_wl,
+            fwhm=batch_fwhm,
             n_cores=n_cores,
+            channelized_uncertainty_file=most_common_channelized_noise
         )
 
         # Assemble expected ISOFIT input format
@@ -231,6 +236,16 @@ def main(
                 batch_utc_time[i],
             ], axis=0)
 
+        # Assume if rdn_factors exist, they are uniform across batch
+        most_common_rdn_factors_file = Counter(batch_rdn_factors).most_common(1)[0][0]
+        if most_common_rdn_factors_file:
+            rdn_factors = np.loadtxt(most_common_rdn_factors_file) 
+            assert len(rdn_factors) == len(batch_wl)
+        else:
+            rdn_factors = np.ones(len(batch_wl))
+
+        batch_rdn_data *= rdn_factors[None, :]
+
         # PRESOLVE
         modtran_template_path = (
             input_config.config_root
@@ -247,7 +262,6 @@ def main(
             h2o_spacing=0.64,
             presolve=True,
             retrieve_co2=False,
-            channelized_noise_file=batch_channelized_noise[i]
         )
         dict_str = pprint.pformat(presolve_config, indent=1)
         logging.debug(dict_str)
@@ -264,7 +278,13 @@ def main(
         print("Running presolve")
         fm_ref = ray.put(fm)
         futures = [
-            ray_oe_inversion.remote(presolve_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            ray_oe_inversion.remote(
+                presolve_config,
+                fm_ref,
+                batch_rdn_data[i],
+                batch_loc_data[i],
+                batch_obs_data[i]
+            )
             for i in range(len(batch_rdn_data))
         ]
         batch_results = np.array(ray.get(futures))
@@ -300,7 +320,6 @@ def main(
             aerosol_max=0.5,
             presolve=False,
             retrieve_co2=False,
-            channelized_noise_file=channelized_noise[i]
         )
         dict_str = pprint.pformat(main_config, indent=1)
         logging.debug(dict_str)
