@@ -89,6 +89,7 @@ def main(
     aspect: InversionData,
     cos_i: InversionData,
     utc_time: InversionData,
+    surface_file_paths: InversionData,
     channelized_noise_paths: InversionData,
     rdn_factors_paths: InversionData,
     wl: dict,
@@ -183,6 +184,7 @@ def main(
         batch_utc_time = utc_time[indexes].array()
         batch_sensor = sensor[indexes]
         batch_gid = gid[indexes]
+        batch_surface_paths = surface_file_paths[indexes]
         batch_channelized_noise = channelized_noise_paths[indexes]
         batch_rdn_factors = rdn_factors_paths[indexes]
 
@@ -192,6 +194,7 @@ def main(
         agg = np.mean
         most_common_sensor = Counter(batch_sensor).most_common(1)[0][0]
         most_common_gid = Counter(batch_gid).most_common(1)[0][0]
+        most_common_surface_path = Counter(batch_surface_paths).most_common(1)[0][0]
         most_common_channelized_noise = Counter(batch_channelized_noise).most_common(1)[0][0]
         batch_wl = np.array(wl[most_common_sensor])
         batch_fwhm = np.array(fwhm[most_common_sensor])
@@ -209,6 +212,7 @@ def main(
             utc_time=agg(batch_utc_time),
             wl=batch_wl,
             fwhm=batch_fwhm,
+            surface_json_path=most_common_surface_path,
             n_cores=n_cores,
             channelized_uncertainty_file=most_common_channelized_noise
         )
