@@ -101,8 +101,8 @@ def main(
     delete_all_files: bool = True,
     task_id: str = None,
     inp_batch_keys: list = ['gid'],
-    h2o_min: float = 0.2,
-    h2o_max: float = 6.0
+    emulator_base=None,
+    **kwargs
 ):
     """
     Not currently hooked up:
@@ -214,7 +214,8 @@ def main(
             fwhm=batch_fwhm,
             surface_json_path=most_common_surface_path,
             n_cores=n_cores,
-            channelized_uncertainty_file=most_common_channelized_noise
+            channelized_uncertainty_file=most_common_channelized_noise,
+            emulator_base=emulator_base
         )
 
         # Assemble expected ISOFIT input format
@@ -261,11 +262,11 @@ def main(
         presolve_config = input_config.build(
             str(modtran_template_path),
             str(lut_directory),
-            h2o_min=h2o_min,
-            h2o_max=h2o_max,
-            h2o_spacing=0.64,
             presolve=True,
             retrieve_co2=False,
+            h2o_min=kwargs.get("h2o_min", 0.2),
+            h2o_max=kwargs.get("h2o_max", 5.6),
+            h2o_spacing=0.64,
         )
         dict_str = pprint.pformat(presolve_config, indent=1)
         logging.debug(dict_str)
@@ -298,8 +299,8 @@ def main(
         # Handle the presolve results
         h2o_idx = [i for i, val in enumerate(statevec) if val == 'H2OSTR'][0]
         h2o_est = batch_state[:, h2o_idx]
-        p05 = np.percentile(h2o_est[h2o_est > h2o_min], 2)
-        p95 = np.percentile(h2o_est[h2o_est > h2o_min], 98)
+        p05 = np.percentile(h2o_est[h2o_est > kwargs.get("h2o_min", 0.2)], 2)
+        p95 = np.percentile(h2o_est[h2o_est < kwargs.get("h2o_max", 5.6)], 98)
 
         margin = (p95 - p05) * 0.5
         h2o_spacing = 0.25
@@ -317,18 +318,20 @@ def main(
         main_config = input_config.build(
             str(modtran_template_path),
             str(lut_directory),
-            h2o_min=h2o_min,
-            h2o_max=h2o_max,
-            h2o_spacing=h2o_spacing,
-            aerosol_min=0.,
-            aerosol_max=0.5,
             presolve=False,
             retrieve_co2=False,
+            h2o_min=kwargs.get("h2o_min", 0.2),
+            h2o_max=kwargs.get("h2o_max", 5.6),
+            h2o_spacing=h2o_spacing,
+            aerosol_min=kwargs.get("aerosol_min", 0.05),
+            aerosol_max=kwargs.get("aerosol_max", 0.5),
+            **kwargs
         )
         dict_str = pprint.pformat(main_config, indent=1)
         logging.debug(dict_str)
 
         main_config = Config(main_config)
+        print(main_config.forward_model.atmosphere.emulator_file)
         logging.info(f"isofit main solve n_cores: {main_config.implementation.n_cores}")
         logging.info(f"Building main solve LUT — n_cores={n_cores}")
         fm = ForwardModel(main_config)

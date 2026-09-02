@@ -11,8 +11,10 @@ from isofit.core import units
 from isofit.data import env
 import isofit.utils.template_construction as tmpl
 from isofit.utils.surface_model import surface_model
-# from isofit.atmosphere.engines.modtran import ModtranRT
-# from isofit.core.forward import modtran_water_upperbound_polynomials, modtran_aot_lowerbound_polynomials
+from isofit.atmosphere.atmosphere import (
+    modtran_aot_lowerbound_polynomials,
+    modtran_water_upperbound_polynomials,
+)
 
 from models import enforce_annotations
 
@@ -23,22 +25,10 @@ class LUTConfig:
 
     def __init__(
         self,
-        lut_config_file: str = None,
-        emulator: str = None,
         no_min_lut_spacing: bool = False,
         atmosphere_type="ATM_MIDLAT_SUMMER",
         **kwargs,
     ):
-        if lut_config_file is not None:
-            with open(lut_config_file, "r") as f:
-                lut_config = json.load(f)
-
-        # For each element, set the look up table spacing (lut_spacing) as the
-        # anticipated spacing value, or 0 to use a single point (not LUT).
-        # Set the 'lut_spacing_min' as the minimum distance allowed - if separation
-        # does not meet this threshold based on the available data, on a single
-        # point will be used.
-
         # Units of kilometers
         self.elevation_spacing = 0.25
         self.elevation_spacing_min = 0.2
@@ -49,14 +39,10 @@ class LUTConfig:
 
         # Special parameter to specify the minimum allowable water vapor value in g / m2
         self.h2o_min = 0.2
-
-        # Set defaults, will override based on settings
-        # Units of g / m2
-        # modtran_max_water = modtran_water_upperbound_polynomials()[
-        #     atmosphere_type
-        # ](0)
-        modtran_max_water = 6
-        self.h2o_range = [0.2, modtran_max_water]
+        modtran_max_water = modtran_water_upperbound_polynomials()[
+            atmosphere_type
+        ](0)
+        self.h2o_max = modtran_max_water
 
         # Units of degrees
         self.to_sensor_zenith_spacing = 10
@@ -68,7 +54,7 @@ class LUTConfig:
 
         # Units of degrees
         self.relative_azimuth_spacing = 30      # Set lower than dev
-        self.relative_azimuth_spacing_min = 25
+        self.relative_azimuth_spacing_min = 15
 
         # Units of AOD
         self.aerosol_0_spacing = 0
@@ -83,10 +69,9 @@ class LUTConfig:
         self.aerosol_2_spacing_min = 0
 
         # Units of AOD
-        # modtran_min_aerosol = modtran_aot_lowerbound_polynomials()[
-        #     atmosphere_type
-        # ](0)
-        modtran_min_aerosol = 0.05
+        modtran_min_aerosol = modtran_aot_lowerbound_polynomials()[
+            atmosphere_type
+        ](0)
         self.aerosol_0_range = [modtran_min_aerosol, 1]
         self.aerosol_1_range = [modtran_min_aerosol, 1]
         self.aerosol_2_range = [modtran_min_aerosol, 1]
@@ -110,11 +95,15 @@ class LUTConfig:
         ]
 
         # Overwrite anything that comes from kwargs
-        self.__dict__.update(kwargs)
+        self.__dict__.update(
+            {k: v for k, v in kwargs.items() if v is not None}
+        )
 
-        # Overwrite anything that comes from config file
-        if lut_config_file is not None:
-            self.__dict__.update(lut_config)
+        # Do this after overrides, let's you pass in min-max h2o
+        self.h2o_range = [
+            self.h2o_min, 
+            min(self.h2o_max, modtran_max_water)
+        ]
 
         # Update aerosol ranges for Modtran ranges
         for key in aerosol_keys:
@@ -126,12 +115,6 @@ class LUTConfig:
                 ]
                 setattr(self, key, valid_range)
 
-        # Make sure the low end of the aerosol range is used
-        if emulator is not None and os.path.splitext(emulator)[1] != ".jld2":
-            self.aot_550_range = self.aerosol_2_range
-            self.aot_550_spacing = self.aerosol_2_spacing
-            self.aot_550_spacing_min = self.aerosol_2_spacing_min
-            self.aerosol_2_spacing = 0
 
     def get_grid_with_data(
         self, data_input: np.array, spacing: float, min_spacing: float
@@ -330,21 +313,29 @@ class InputConfig:
             default=str
         )
 
-    def make_lut_grids(self, elevation_data, sensor_zenith_data,
-                       sun_zenith_data, sensor_azimuth_data,
-                       sun_azimuth_data, aerosol_min, aerosol_max,
-                       h2o_min, h2o_max, h2o_spacing,
-                       pressure_elevation):
+    def make_lut_grids(
+        self, 
+        elevation_data, 
+        sensor_zenith_data,
+        sun_zenith_data,
+        sensor_azimuth_data,
+        sun_azimuth_data,
+        **kwargs
+    ):
 
         # Hard coded h2o spacing for now
         lut_params = LUTConfig(
-            emulator=self.emulator_base,
-            h2o_range=[h2o_min, h2o_max],
-            h2o_spacing=h2o_spacing,
-            aerosol_0_range=[aerosol_min, aerosol_max],
-            aerosol_1_range=[aerosol_min, aerosol_max],
-            aerosol_2_range=[aerosol_min, aerosol_max],
-            aot550_range=[aerosol_min, aerosol_max],
+            h2o_min=kwargs.get("h2o_min"),
+            h2o_max=kwargs.get("h2o_max"),
+            h2o_spacing=kwargs.get("h2o_spacing"),
+            aerosol_0_range=kwargs.get("aerosol_range"),
+            aerosol_1_range=kwargs.get("aerosol_range"),
+            aerosol_2_range=kwargs.get("aerosol_range"),
+            aot550_range=kwargs.get("aerosol_range"),
+            elevation_spacing=kwargs.get("elevation_spacing"),
+            to_sensor_zenith_spacing=kwargs.get("to_sensor_zenith_spacing"),
+            to_sun_zenith_spacing=kwargs.get("to_sun_zenith_spacing"),
+            relative_azimuth_spacing=kwargs.get("relative_azimuth_spacing"),
         )
 
         h2o_lut_grid = lut_params.get_grid(
@@ -411,9 +402,12 @@ class InputConfig:
     def wavelengths(self):
         wl = self.wl
         fwhm = self.fwhm
-        if wl[0] > 100:
-            wl = units.nm_to_micron(wl)
-            fwhm = units.nm_to_micron(fwhm)
+        # if wl[0] > 100:
+        #     wl = units.nm_to_micron(wl)
+        #     fwhm = units.nm_to_micron(fwhm)
+        if wl[0] < 100:
+            wl = units.micron_to_nm(wl)
+            fwhm = units.micron_to_nm(fwhm)
         np.savetxt(
             self.wavelength_path,
             np.array([wl, fwhm]).T
@@ -433,14 +427,10 @@ class InputConfig:
         self,
         modtran_template_path: str,
         lut_directory: str,
-        h2o_min: float = 0.2,
-        h2o_max: float = 6.0,
-        h2o_spacing: float = 0.25,
-        aerosol_min: float = 0,
-        aerosol_max: float = 1.0,
         presolve: bool = True,
         pressure_elevation: bool = False,
         retrieve_co2: bool = False,
+        **kwargs,
     ):
         # Metadata from loc
         elevation_km = max(
@@ -543,12 +533,7 @@ class InputConfig:
             self.sun_zenith_data,
             self.sensor_azimuth_data,
             self.sun_azimuth_data,
-            aerosol_min,
-            aerosol_max,
-            h2o_min=h2o_min,
-            h2o_max=h2o_max,
-            h2o_spacing=h2o_spacing,
-            pressure_elevation=pressure_elevation
+            **kwargs
         )
 
         # Presolve overrides
