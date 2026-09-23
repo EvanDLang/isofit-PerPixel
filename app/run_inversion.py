@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import ray
 
+from isofit.core.common import load_esd
 from isofit.core.forward import ForwardModel
 from isofit.core.fileio import IO
 from isofit.core.geometry import Geometry
@@ -43,18 +44,20 @@ def oe_inversion(config, fm,
         10 - UTC time
     """
 
-    x = Inversion(config, fm).invert(
-        rdn_data,
-        Geometry(
-            loc=loc_data,
-            obs=obs_data,
-            esd=IO.load_esd()
-        )
+
+    geom = Geometry(
+        loc=loc_data,
+        obs=obs_data,
     )
+    iv = Inversion(config, fm)
+    x = iv.invert(rdn_data, geom)
+    S_hat, K, G = iv.calc_posterior(x[-1], geom, rdn_data)
+    posterior_uncertainty = np.sqrt(np.diag(S_hat))
+
     if only_converged:
-        return x[-1, :]
+        return x[-1, :], posterior_uncertainty
     else:
-        return x
+        return x, posterior_uncertainty
 
 
 @ray.remote
@@ -86,6 +89,9 @@ def main(
     aspect: InversionData,
     cos_i: InversionData,
     utc_time: InversionData,
+    surface_file_paths: InversionData,
+    channelized_noise_paths: InversionData,
+    rdn_factors_paths: InversionData,
     wl: dict,
     fwhm: dict,
     sensor: InversionData,
@@ -94,9 +100,9 @@ def main(
     n_cores: int = 1,
     delete_all_files: bool = True,
     task_id: str = None,
-    inp_batch_keys: list = ['sensor', 'dt'],
-    h2o_min: float = 0.2,
-    h2o_max: float = 6.0
+    inp_batch_keys: list = ['gid'],
+    emulator_base=None,
+    **kwargs
 ):
     """
     Not currently hooked up:
@@ -156,8 +162,9 @@ def main(
         batches = {tuple(['all']): [i for i in range(len(gid))]}
 
     # Iterate over batches
-    results = {}
     state_names = {}
+    states = {}
+    uncertainties = {}
     for batch, indexes in batches.items():
         batch_rundir = rundir / '_'.join(batch)
         # Batch input data
@@ -177,6 +184,9 @@ def main(
         batch_utc_time = utc_time[indexes].array()
         batch_sensor = sensor[indexes]
         batch_gid = gid[indexes]
+        batch_surface_paths = surface_file_paths[indexes]
+        batch_channelized_noise = channelized_noise_paths[indexes]
+        batch_rdn_factors = rdn_factors_paths[indexes]
 
         # Make the LUT config for the entire batch:
         # Sensor and gid: use most common
@@ -184,6 +194,11 @@ def main(
         agg = np.mean
         most_common_sensor = Counter(batch_sensor).most_common(1)[0][0]
         most_common_gid = Counter(batch_gid).most_common(1)[0][0]
+        most_common_surface_path = Counter(batch_surface_paths).most_common(1)[0][0]
+        most_common_channelized_noise = Counter(batch_channelized_noise).most_common(1)[0][0]
+        batch_wl = np.array(wl[most_common_sensor])
+        batch_fwhm = np.array(fwhm[most_common_sensor])
+
         input_config = InputConfig(
             rundir=batch_rundir,
             sensor=most_common_sensor,
@@ -195,9 +210,12 @@ def main(
             sun_azimuth_data=agg(batch_sun_azimuth),
             path_length=agg(batch_path_length),
             utc_time=agg(batch_utc_time),
-            wl=np.array(wl[most_common_sensor]),
-            fwhm=np.array(fwhm[most_common_sensor]),
+            wl=batch_wl,
+            fwhm=batch_fwhm,
+            surface_json_path=most_common_surface_path,
             n_cores=n_cores,
+            channelized_uncertainty_file=most_common_channelized_noise,
+            emulator_base=emulator_base
         )
 
         # Assemble expected ISOFIT input format
@@ -223,6 +241,16 @@ def main(
                 batch_utc_time[i],
             ], axis=0)
 
+        # Assume if rdn_factors exist, they are uniform across batch
+        most_common_rdn_factors_file = Counter(batch_rdn_factors).most_common(1)[0][0]
+        if most_common_rdn_factors_file:
+            rdn_factors = np.loadtxt(most_common_rdn_factors_file) 
+            assert len(rdn_factors) == len(batch_wl)
+        else:
+            rdn_factors = np.ones(len(batch_wl))
+
+        batch_rdn_data *= rdn_factors[None, :]
+
         # PRESOLVE
         modtran_template_path = (
             input_config.config_root
@@ -234,11 +262,11 @@ def main(
         presolve_config = input_config.build(
             str(modtran_template_path),
             str(lut_directory),
-            h2o_min=h2o_min,
-            h2o_max=h2o_max,
-            h2o_spacing=0.64,
             presolve=True,
-            retrieve_co2=False
+            retrieve_co2=False,
+            h2o_min=kwargs.get("h2o_min", 0.2),
+            h2o_max=kwargs.get("h2o_max", 5.6),
+            h2o_spacing=0.64,
         )
         dict_str = pprint.pformat(presolve_config, indent=1)
         logging.debug(dict_str)
@@ -255,16 +283,24 @@ def main(
         print("Running presolve")
         fm_ref = ray.put(fm)
         futures = [
-            ray_oe_inversion.remote(presolve_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            ray_oe_inversion.remote(
+                presolve_config,
+                fm_ref,
+                batch_rdn_data[i],
+                batch_loc_data[i],
+                batch_obs_data[i]
+            )
             for i in range(len(batch_rdn_data))
         ]
         batch_results = np.array(ray.get(futures))
+        batch_state = batch_results[:, 0, :]
+        batch_unc = batch_results[:, 1, :]
 
         # Handle the presolve results
         h2o_idx = [i for i, val in enumerate(statevec) if val == 'H2OSTR'][0]
-        h2o_est = batch_results[:, h2o_idx]
-        p05 = np.percentile(h2o_est[h2o_est > h2o_min], 2)
-        p95 = np.percentile(h2o_est[h2o_est > h2o_min], 98)
+        h2o_est = batch_state[:, h2o_idx]
+        p05 = np.percentile(h2o_est[h2o_est > kwargs.get("h2o_min", 0.2)], 2)
+        p95 = np.percentile(h2o_est[h2o_est < kwargs.get("h2o_max", 5.6)], 98)
 
         margin = (p95 - p05) * 0.5
         h2o_spacing = 0.25
@@ -282,18 +318,20 @@ def main(
         main_config = input_config.build(
             str(modtran_template_path),
             str(lut_directory),
-            h2o_min=h2o_min,
-            h2o_max=h2o_max,
-            h2o_spacing=h2o_spacing,
-            aerosol_min=0.,
-            aerosol_max=0.5,
             presolve=False,
-            retrieve_co2=False
+            retrieve_co2=False,
+            h2o_min=kwargs.get("h2o_min", 0.2),
+            h2o_max=kwargs.get("h2o_max", 5.6),
+            h2o_spacing=h2o_spacing,
+            aerosol_min=kwargs.get("aerosol_min", 0.05),
+            aerosol_max=kwargs.get("aerosol_max", 0.5),
+            **kwargs
         )
         dict_str = pprint.pformat(main_config, indent=1)
         logging.debug(dict_str)
 
         main_config = Config(main_config)
+        print(main_config.forward_model.atmosphere.emulator_file)
         logging.info(f"isofit main solve n_cores: {main_config.implementation.n_cores}")
         logging.info(f"Building main solve LUT — n_cores={n_cores}")
         fm = ForwardModel(main_config)
@@ -302,24 +340,39 @@ def main(
         print("Running main solve")
         fm_ref = ray.put(fm)
         futures = [
-            ray_oe_inversion.remote(main_config, fm_ref, batch_rdn_data[i], batch_loc_data[i], batch_obs_data[i])
+            ray_oe_inversion.remote(
+                main_config, 
+                fm_ref,
+                batch_rdn_data[i],
+                batch_loc_data[i],
+                batch_obs_data[i]
+            )
             for i in range(len(batch_rdn_data))
         ]
+        results = ray.get(futures)
         batch_results = np.array(ray.get(futures))
+        batch_state = batch_results[:, 0, :]
+        batch_unc = batch_results[:, 1, :]
 
-        results[batch] = batch_results
         state_names[batch] = statevec
+        states[batch] = batch_state
+        uncertainties[batch] = batch_unc
 
         if delete_all_files:
             shutil.rmtree(input_config.rundir)
 
     output = OutputData(
         InversionData([[] for i in range(len(rdn_data))]),
+        InversionData([[] for i in range(len(rdn_data))]),
         InversionData([[] for i in range(len(rdn_data))])
     )
     for key, idx in batches.items():
-        for res, i in zip(results[key], idx):
-            output[i] = (state_names[key], list(res))
+        for state, unc, i in zip(states[key], uncertainties[key], idx):
+            output[i] = (
+                state_names[key],
+                [float(s) for s in state],
+                [float(v) for v in unc],
+            )
 
     end_time = time.time()
     logging.info(f"Batch completed in {round(end_time - start_time, 2)} seconds")
@@ -327,5 +380,6 @@ def main(
     return {
         'statevec': list(output.statevec),
         'solution': list(output.solution),
+        'uncertainty': list(output.uncertainty),
         'runtime_seconds': round(end_time - start_time, 2)
     }
