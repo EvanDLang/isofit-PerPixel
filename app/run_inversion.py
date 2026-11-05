@@ -97,11 +97,13 @@ def main(
     sensor: InversionData,
     gid: InversionData,
     rundir: str,
+    acquisition_dt: list = None,
     n_cores: int = 1,
     delete_all_files: bool = True,
     task_id: str = None,
     inp_batch_keys: list = ['gid'],
     emulator_base=None,
+    noise_path=None,
     **kwargs
 ):
     """
@@ -113,6 +115,9 @@ def main(
       - Need to double check 6c emulator (multipart transm) hookups.
         This was written with 3c sRTMnet.
       - Run-specific AOD bounds and width of h2o window after presolve
+
+    acquisition_dt: one datetime per pixel (granule acquisition date + start
+    time). When given it replaces parsing the date out of the granule id.
     """
 
     start_time = time.time()
@@ -138,7 +143,8 @@ def main(
 
     if 'dt' in inp_batch_keys:
         batch_keys.append(
-            list(itertools.starmap(
+            [dt.strftime('%Y-%m-%d') for dt in acquisition_dt] if acquisition_dt
+            else list(itertools.starmap(
                 parse_date,
                 zip(sensor, gid)
             ))
@@ -196,6 +202,10 @@ def main(
         most_common_gid = Counter(batch_gid).most_common(1)[0][0]
         most_common_surface_path = Counter(batch_surface_paths).most_common(1)[0][0]
         most_common_channelized_noise = Counter(batch_channelized_noise).most_common(1)[0][0]
+        most_common_dt = (
+            Counter(acquisition_dt[i] for i in indexes).most_common(1)[0][0]
+            if acquisition_dt else None
+        )
         batch_wl = np.array(wl[most_common_sensor])
         batch_fwhm = np.array(fwhm[most_common_sensor])
 
@@ -215,7 +225,9 @@ def main(
             surface_json_path=most_common_surface_path,
             n_cores=n_cores,
             channelized_uncertainty_file=most_common_channelized_noise,
-            emulator_base=emulator_base
+            emulator_base=emulator_base,
+            acquisition_dt=most_common_dt,
+            noise_path=noise_path,
         )
 
         # Assemble expected ISOFIT input format

@@ -1,5 +1,7 @@
+import os
 import traceback
 import logging
+from datetime import datetime
 import numpy as np
 
 from run_inversion import main as isofit_main
@@ -25,8 +27,13 @@ def run_inversion(
     sensor_name: str,
     rundir: str,
     job_id: str,
+    inputs: dict,
     n_cores: int = 1,
 ) -> dict:
+    """
+    inputs: per-calibration file paths from inputs.fetch_calibration_inputs —
+    "surface", "channelized_noise", "rdn_factors", "noise"; "" means use the default.
+    """
     try:
         isofit_sensor = SENSOR_KEY_MAP.get(sensor_name)
         if not isofit_sensor:
@@ -68,6 +75,12 @@ def run_inversion(
             aspect=         InversionData([np.array(p["aspect"])            for p in pixels]),
             cos_i=          InversionData([np.array(p["cosine_i"])          for p in pixels]),
             utc_time=       InversionData([np.array(p["utc_time"])          for p in pixels]),
+            # same files for every pixel — a job is one calibration
+            surface_file_paths=      InversionData([inputs["surface"]           for _ in pixels]),
+            channelized_noise_paths= InversionData([inputs["channelized_noise"] for _ in pixels]),
+            rdn_factors_paths=       InversionData([inputs["rdn_factors"]       for _ in pixels]),
+            # acquisition time from the granule record, not parsed from the granule id
+            acquisition_dt=[datetime.combine(p["acquisition_date"], p["acquisition_start_time"]) for p in pixels],
             wl=wl,
             fwhm=fwhm,
             sensor=         InversionData([isofit_sensor for _ in pixels]),
@@ -76,6 +89,11 @@ def run_inversion(
             task_id=job_id,
             n_cores=n_cores,
             delete_all_files=True,
+            # slim image: sRTMnet .h5 on the S3 mount; unset → the emulator bundled in the image
+            emulator_base=os.environ.get("SRTMNET_FILE") or None,
+            # instrument noise model: noise.txt in the sensor prefix, else NOISE_PATH
+            # (local path or s3:// URI); neither → SNR 500
+            noise_path=inputs.get("noise") or os.environ.get("NOISE_PATH") or None,
         )
 
         return {"status": "success", "result": result}

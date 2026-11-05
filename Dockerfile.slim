@@ -1,0 +1,73 @@
+# Slim ISOFIT worker image.
+#
+# Same app and entrypoint as Dockerfile, without the large data:
+#   - the sRTMnet emulator is NOT in the image. It lives in
+#     s3://vswir-plants-config/isofit-data/srtmnet/ and the Batch instance
+#     mounts that prefix at /mnt/isofit-data (Mountpoint for S3, see
+#     terraform isofit_pipeline/templates/mount_isofit_data.sh). The job
+#     definition sets SRTMNET_FILE to the .h5 under that mount; its
+#     <name>_aux.npz must sit next to it.
+#   - no examples / imagecube downloads, except the one irradiance file
+#     isofit_config.py uses
+#   - no compilers, git checkout or .git history in the final image
+#   - CPU-only torch, no jupyter extras
+#   - ISOFIT v4.1.5: app/isofit_config.py needs >= 4.1 (atmosphere
+#     modtran_*_polynomials); Dockerfile still pins v4.0.0-beta
+#
+# ISOFIT data lives in the default ISOFIT home, /root/.isofit (isofit.ini,
+# data/, sixs/, surface/).
+
+# ── builder ──────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y gfortran make git && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 --branch v4.1.5 https://github.com/isofit/isofit.git
+
+COPY requirements.txt .
+# CPU-only torch (workers have no GPU — the default wheel pulls GBs of CUDA
+# libraries). No [docker] extra: that's only jupyter/matplotlib.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir ./isofit "ray[client]" awscli -r requirements.txt
+
+# data (aerosol template, earth-sun distance, …), surface priors, and 6S
+# (compiled here with gfortran). sRTMnet is mounted from S3 at runtime.
+RUN isofit download data && \
+    isofit download surface && \
+    isofit download sixs && \
+    isofit download examples
+
+# keep only the irradiance file from the examples
+RUN IRR=examples/20151026_SantaMonica/data/prism_optimized_irr.dat && \
+    mkdir -p /keep/$(dirname $IRR) && \
+    cp /root/.isofit/$IRR /keep/$IRR && \
+    rm -rf /root/.isofit/examples && \
+    mv /keep/examples /root/.isofit/examples && \
+    find /root/.isofit/sixs -name "*.o" -delete
+
+# ── final ────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+# 6S needs the gfortran runtime only
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y libgfortran5 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /root/.isofit /root/.isofit
+
+# copy application code — will be overwritten by S3 sync at runtime
+COPY app/ /root/app/
+
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /root/app
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

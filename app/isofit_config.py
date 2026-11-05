@@ -18,6 +18,17 @@ from isofit.atmosphere.atmosphere import (
 
 from models import enforce_annotations
 
+
+def local_file(path: str, dest_dir: Path) -> str:
+    """s3://bucket/key → downloaded into dest_dir with boto3; anything else is returned as is."""
+    if not str(path).startswith("s3://"):
+        return path
+    import boto3
+    bucket, _, key = str(path).removeprefix("s3://").partition("/")
+    local = Path(dest_dir) / Path(key).name
+    boto3.client("s3").download_file(bucket, key, str(local))
+    return str(local)
+
 INVERSION_WINDOWS = [[350.0, 1360.0], [1410, 1800.0], [1970.0, 2500.0]]
 
 
@@ -195,7 +206,9 @@ class InputConfig:
         surface_category="multicomponent_surface",
         terrain_style: str = "flat",
         max_slope: float = 20.0,
-        n_cores: int = 1
+        n_cores: int = 1,
+        acquisition_dt: datetime = None,
+        noise_path: str = None,
     ):
         """
         Generic config class to make config.
@@ -291,12 +304,13 @@ class InputConfig:
         self.atmosphere_type = atmosphere_type
         self.surface_category = surface_category
         self.inversion_windows = INVERSION_WINDOWS
-        self.channelized_uncertainty_file = channelized_uncertainty_file
+        # ISOFIT loads the file whenever the path is not None, so "" (no file) → None
+        self.channelized_uncertainty_file = channelized_uncertainty_file or None
 
         # Files not hooked up yet
         self.eof_path = None
         self.eof_working_path = None
-        self.noise_path = None
+        self.noise_path = local_file(noise_path, self.data_root) if noise_path else None
         self.uncorrelated_radiometric_uncertainty = None
         self.dn_uncertainty_file = None
         self.input_model_discrepancy_path = None
@@ -305,6 +319,9 @@ class InputConfig:
         self.max_slope = max_slope
 
         self.n_cores = n_cores
+
+        # When None, build() falls back to parsing the date from the granule id
+        self.acquisition_dt = acquisition_dt
 
     def __repr__(self):
         return json.dumps(
@@ -456,12 +473,15 @@ class InputConfig:
         )
 
         # Date stuff
-        dt, sensor_inversion_windows = sensor_name_to_dt(
-            self.sensor,
-            self.fid
-        )
-        if sensor_inversion_windows:
-            self.inversion_windows = sensor_inversion_windows
+        if self.acquisition_dt is not None:
+            dt = self.acquisition_dt
+        else:
+            dt, sensor_inversion_windows = sensor_name_to_dt(
+                self.sensor,
+                self.fid
+            )
+            if sensor_inversion_windows:
+                self.inversion_windows = sensor_inversion_windows
 
         # Don't think I need to day increment here
         dayofyear = dt.timetuple().tm_yday
